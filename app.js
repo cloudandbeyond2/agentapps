@@ -1,22 +1,19 @@
 require('dotenv').config();
 const express = require('express');
-const app = express();
-const http = require('http').Server(app);
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const userRoutes = require('./routes/userRoutes');
-const agentRoutes = require('./routes/agentRoutes');
-const PORT = process.env.PORT || 5000;
-const MONGO_URI = process.env.MONGO_URI;
+const userRoutes = require('../routes/userRoutes');
+const agentRoutes = require('../routes/agentRoutes');
+ 
+const app = express();
  
 // Middleware
- 
 app.use(express.json()); // For JSON parsing
 app.use(bodyParser.json()); // For parsing JSON requests
  
 // CORS Configuration
-const allowedOrigins = ['http://localhost:3000', 'https://your-deployed-app.com'];
+const allowedOrigins = ['http://localhost:3000', 'https://your-deployed-app.vercel.app'];
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin)) {
@@ -30,7 +27,7 @@ app.use(cors({
 }));
  
 // MongoDB Connection
-mongoose.connect(MONGO_URI)
+mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB connected'))
   .catch(err => console.error('MongoDB connection error:', err));
  
@@ -49,9 +46,5 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Internal Server Error" });
 });
  
-// Start the server
-// app.listen(PORT, () => {
-//   console.log(`Server running on http://localhost:${PORT}`);
-// });
- 
+// Export as a Vercel serverless function
 module.exports = app;
