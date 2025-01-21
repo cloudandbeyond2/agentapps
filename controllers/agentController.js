@@ -1,75 +1,59 @@
 const formidable = require('formidable');
-const fs = require('fs');
 const { BlobServiceClient } = require('@azure/storage-blob');
 const Agent = require('../models/Agent');
 const { v4: uuidv4 } = require('uuid');
-const path = require('path');
 
 // Azure Blob Storage Configuration
 const AZURE_STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
-const containerName = '21l01l2025'; // Replace with your Azure Blob container name
+const containerName = 'agentfiles'; // Replace with your Azure Blob container name
+
+// Azure Blob Service Client Initialization
+const blobServiceClient = BlobServiceClient.fromConnectionString(AZURE_STORAGE_CONNECTION_STRING);
+const containerClient = blobServiceClient.getContainerClient(containerName);
+
+// Ensure the container exists (create it if it doesn't)
+(async () => {
+  try {
+    await containerClient.createIfNotExists();
+    console.log(`Container "${containerName}" is ready.`);
+  } catch (error) {
+    console.error(`Error ensuring container exists: ${error.message}`);
+  }
+})();
 
 // Utility function to upload file to Azure Blob Storage
 const uploadToAzure = async (file, blobName) => {
-  const AZURE_STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
-  const containerName = 'agentfiles';
-
   try {
-    const blobServiceClient = BlobServiceClient.fromConnectionString(AZURE_STORAGE_CONNECTION_STRING);
-    const containerClient = blobServiceClient.getContainerClient(containerName);
-
-    // Create container if it doesn't exist
-    const createContainerResponse = await containerClient.createIfNotExists();
-    if (createContainerResponse.succeeded) {
-      console.log(`Container ${containerName} created successfully.`);
-    }
-
     const blockBlobClient = containerClient.getBlockBlobClient(blobName);
-    const stream = fs.createReadStream(file.filepath);
+    const stream = file.filepath ? fs.createReadStream(file.filepath) : file;
     await blockBlobClient.uploadStream(stream, file.size, undefined, {
       blobHTTPHeaders: { blobContentType: file.mimetype },
     });
-
     console.log(`File uploaded to Azure: ${blobName}`);
     return blockBlobClient.url; // Return the URL of the uploaded file
   } catch (error) {
     console.error('Error uploading to Azure:', error.message);
-    throw error;
+    throw new Error('Error uploading file to Azure');
   }
 };
 
 // Create a new agent
 exports.createAgent = async (req, res) => {
   const form = new formidable.IncomingForm();
-  form.uploadDir = './uploads'; // Directory for temporary file storage
-  form.keepExtensions = true;  // Retain file extensions
-  form.on('fileBegin', (name, file) => {
-    file.filepath = `${form.uploadDir}/${file.newFilename}`; // Proper filepath
-  });
-
-  // Ensure the uploads directory exists
-  const uploadsDir = path.join(__dirname, '../uploads');
-  if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-  }
+  form.keepExtensions = true;
 
   form.parse(req, async (err, fields, files) => {
     if (err) {
-      console.error('File upload error:', err.message);
-      return res.status(400).json({ message: 'File upload error', error: err.message });
+      return res.status(400).json({ message: 'Error parsing form data', error: err.message });
     }
 
-    console.log('Fields received:', fields);
-    console.log('Files received:', files);
-
     try {
-      // Parse fields to extract single values from arrays
+      // Parse and validate fields
       const agentData = {};
       Object.keys(fields).forEach((key) => {
         agentData[key] = Array.isArray(fields[key]) ? fields[key][0] : fields[key];
       });
 
-      // Validate required fields
       const requiredFields = ['firstName', 'lastName', 'email', 'mobileNumber', 'gender', 'dateOfBirth'];
       for (const field of requiredFields) {
         if (!agentData[field]) {
@@ -77,43 +61,28 @@ exports.createAgent = async (req, res) => {
         }
       }
 
-      // Check if email or mobile number already exists
-      const existingEmail = await Agent.findOne({ email: agentData.email });
-      if (existingEmail) {
-        return res.status(400).json({ message: 'Email already exists' });
-      }
+      // Check duplicates
+      const emailExists = await Agent.findOne({ email: agentData.email });
+      if (emailExists) return res.status(400).json({ message: 'Email already exists' });
 
-      const existingMobile = await Agent.findOne({ mobileNumber: agentData.mobileNumber });
-      if (existingMobile) {
-        return res.status(400).json({ message: 'Mobile number already exists' });
-      }
+      const mobileExists = await Agent.findOne({ mobileNumber: agentData.mobileNumber });
+      if (mobileExists) return res.status(400).json({ message: 'Mobile number already exists' });
 
-      // Process file uploads
+      // Upload files to Azure Blob Storage
       const documentUploads = {};
-      for (const [key, fileArray] of Object.entries(files)) {
-        const file = fileArray[0];
-        if (!file || !file.filepath) {
-          console.error(`File ${key} is invalid or not uploaded.`);
-          continue;
-        }
-
-        try {
-          const blobName = `${key}-${uuidv4()}`;
-          const fileUrl = await uploadToAzure(file, blobName);
-          documentUploads[`${key}FilePath`] = fileUrl;
-        } catch (error) {
-          console.error(`Error uploading file ${key}:`, error.message);
-        }
+      for (const [key, file] of Object.entries(files)) {
+        if (!file.filepath) continue; // Skip invalid files
+        const blobName = `${key}-${uuidv4()}`;
+        const fileUrl = await uploadToAzure(file, blobName);
+        documentUploads[`${key}FilePath`] = fileUrl;
       }
-
-      // Merge uploaded document URLs with agent data
-      Object.assign(agentData, documentUploads);
-
-      // Generate and assign a unique UUID
-      agentData.agentId = uuidv4();
 
       // Save new agent
-      const newAgent = new Agent(agentData);
+      const newAgent = new Agent({
+        ...agentData,
+        ...documentUploads,
+        agentId: uuidv4(),
+      });
       const savedAgent = await newAgent.save();
 
       res.status(201).json({ message: 'Agent created successfully', agent: savedAgent });
@@ -155,33 +124,32 @@ exports.getAgentById = async (req, res) => {
 // Update an agent
 exports.updateAgent = async (req, res) => {
   const form = new formidable.IncomingForm();
+  form.keepExtensions = true;
+
   form.parse(req, async (err, fields, files) => {
     if (err) {
-      return res.status(400).json({ message: 'File upload error', error: err.message });
+      return res.status(400).json({ message: 'Error parsing form data', error: err.message });
     }
 
     try {
       const { id } = req.params;
 
-      // Fetch the agent by ID to ensure it exists
       const existingAgent = await Agent.findById(id);
       if (!existingAgent) {
         return res.status(404).json({ message: 'Agent not found' });
       }
 
-      const updatedData = fields;
-
-      // Process file uploads
+      // Upload new files to Azure Blob Storage
       const documentUploads = {};
       for (const [key, file] of Object.entries(files)) {
+        if (!file.filepath) continue;
         const blobName = `${key}-${uuidv4()}`;
-        documentUploads[`${key}FilePath`] = await uploadToAzure(file, blobName);
+        const fileUrl = await uploadToAzure(file, blobName);
+        documentUploads[`${key}FilePath`] = fileUrl;
       }
 
-      // Merge uploaded document URLs with updated data
-      Object.assign(updatedData, documentUploads);
-
-      // Update the agent in the database
+      // Update agent in the database
+      const updatedData = { ...fields, ...documentUploads };
       const updatedAgent = await Agent.findByIdAndUpdate(id, updatedData, { new: true });
 
       res.status(200).json({ message: 'Agent updated successfully', agent: updatedAgent });
