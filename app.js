@@ -1,12 +1,13 @@
 require('dotenv').config();
+const app = express();
+const http = require('http').Server(app);
 const express = require('express');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const userRoutes = require('./routes/userRoutes');
 const agentRoutes = require('./routes/agentRoutes');
-const http = require('http').Server(app);
-const app = express();
+ 
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI;
 const bcrypt = require('bcrypt'); // For hashing passwords
@@ -56,3 +57,4 @@ app.use((err, req, res, next) => {
 // });
  
 module.exports = app;
+ 
