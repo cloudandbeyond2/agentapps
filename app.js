@@ -1,7 +1,7 @@
 require('dotenv').config();
+const express = require('express');
 const app = express();
 const http = require('http').Server(app);
-const express = require('express');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -57,4 +57,3 @@ app.use((err, req, res, next) => {
 // });
  
 module.exports = app;
- 
